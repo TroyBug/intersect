@@ -234,6 +234,147 @@ ready = (callback) ->
     document.addEventListener('DOMContentLoaded', handler, false)
 
 
+class CirclePointExample extends Example
+  constructor: ->
+    super
+    @angle = 0
+    @pos = new Point()
+    @circle = new Circle(new Point(0, 0), 24)
+
+  tick: (elapsed) ->
+    super
+    @angle += 0.5 * Math.PI * elapsed
+    @pos.x = Math.cos(@angle * 0.4) * 32
+    @pos.y = Math.sin(@angle) * 12
+    hit = @circle.intersectPoint(@pos)
+    @drawCircle(@circle, '#666')
+    if hit
+      @drawPoint(@pos, '#f00')
+      @drawPoint(hit.pos, '#ff0')
+    else
+      @drawPoint(@pos, '#0f0')
+
+
+class CircleSegmentExample extends Example
+  constructor: ->
+    super
+    @angle = 0
+    @circle = new Circle(new Point(0, 0), 24)
+
+  tick: (elapsed) ->
+    super
+    @angle += 0.5 * Math.PI * elapsed
+    pos1 = new Point(Math.cos(@angle) * 64, Math.sin(@angle) * 64)
+    pos2 = new Point(Math.sin(@angle) * 32, Math.cos(@angle) * 32)
+    delta = new Point(pos2.x - pos1.x, pos2.y - pos1.y)
+    hit = @circle.intersectSegment(pos1, delta)
+    dir = delta.clone()
+    length = dir.normalize()
+    @drawCircle(@circle, '#666')
+    if hit?
+      @drawRay(pos1, dir, length, '#f00')
+      @drawSegment(pos1, hit.pos, '#ff0')
+      @drawPoint(hit.pos, '#ff0')
+      @drawRay(hit.pos, hit.normal, 6, '#ff0', false)
+    else
+      @drawRay(pos1, dir, length, '#0f0')
+
+
+class CircleAABBExample extends Example
+  constructor: ->
+    super
+    @angle = 0
+    @circle = new Circle(new Point(0, 0), 32)
+    @box = new AABB(new Point(0, 0), new Point(16, 16))
+
+  tick: (elapsed) ->
+    super
+    @angle += 0.2 * Math.PI * elapsed
+    @box.pos.x = Math.cos(@angle) * 96
+    @box.pos.y = Math.sin(@angle * 2.4) * 24
+    hit = @circle.intersectAABB(@box)
+    @drawCircle(@circle, '#666')
+    if hit?
+      @drawAABB(@box, '#f00')
+      @box.pos.x += hit.delta.x
+      @box.pos.y += hit.delta.y
+      @drawAABB(@box, '#ff0')
+      @drawPoint(hit.pos, '#ff0')
+      @drawRay(hit.pos, hit.normal, 4, '#ff0', false)
+    else
+      @drawAABB(@box, '#0f0')
+
+
+class CircleCircleExample extends Example
+  constructor: ->
+    super
+    @angle = 0
+    @circle1 = new Circle(new Point(0, 0), 32)
+    @circle2 = new Circle(new Point(0, 0), 16)
+
+  tick: (elapsed) ->
+    super
+    @angle += 0.2 * Math.PI * elapsed
+    @circle2.pos.x = Math.cos(@angle) * 96
+    @circle2.pos.y = Math.sin(@angle * 2.4) * 24
+    hit = @circle1.intersectCircle(@circle2)
+    @drawCircle(@circle1, '#666')
+    if hit?
+      @drawCircle(@circle2, '#f00')
+      @circle2.pos.x += hit.delta.x
+      @circle2.pos.y += hit.delta.y
+      @drawCircle(@circle2, '#ff0')
+      @drawPoint(hit.pos, '#ff0')
+      @drawRay(hit.pos, hit.normal, 4, '#ff0', false)
+    else
+      @drawCircle(@circle2, '#0f0')
+
+
+class CircleSweptAABBExample extends Example
+  constructor: ->
+    super
+    @angle = 0
+    @circle = new Circle(new Point(0, 0), 112)
+    @sweepBoxes = [
+      new AABB(new Point(-152, 24), new Point(16, 16)),
+      new AABB(new Point(128, -48), new Point(16, 16))]
+    @sweepDeltas = [
+      new Point(64, -12),
+      new Point(-32, 96)]
+    @tempBox = new AABB(new Point(0, 0), new Point(16, 16))
+
+  tick: (elapsed) ->
+    super
+    @angle += 0.5 * Math.PI * elapsed
+    @drawCircle(@circle, '#666')
+    factor = ((Math.cos(@angle) + 1) * 0.5) || 1e-8
+    for box, i in @sweepBoxes
+      delta = @sweepDeltas[i].clone()
+      delta.x *= factor
+      delta.y *= factor
+      sweep = @circle.sweepAABB(box, delta)
+      dir = delta.clone()
+      length = dir.normalize()
+      @drawAABB(box, '#666')
+      if sweep.hit?
+        # Draw a red box at the point where it was trying to move to
+        @drawRay(box.pos, dir, length, '#f00')
+        @tempBox.pos.x = box.pos.x + delta.x
+        @tempBox.pos.y = box.pos.y + delta.y
+        @drawAABB(@tempBox, '#f00')
+        # Draw a yellow box at the point it actually got to
+        @tempBox.pos.x = sweep.pos.x
+        @tempBox.pos.y = sweep.pos.y
+        @drawAABB(@tempBox, '#ff0')
+        @drawPoint(sweep.hit.pos, '#ff0')
+        @drawRay(sweep.hit.pos, sweep.hit.normal, 4, '#ff0', false)
+      else
+        @tempBox.pos.x = sweep.pos.x
+        @tempBox.pos.y = sweep.pos.y
+        @drawAABB(@tempBox, '#0f0')
+        @drawRay(box.pos, dir, length, '#0f0')
+
+
 ready ->
   exampleIds =
     'aabb-vs-point': AABBPointExample
@@ -241,6 +382,11 @@ ready ->
     'aabb-vs-aabb': AABBAABBExample
     'aabb-vs-swept-aabb': AABBSweptAABBExample
     'sweeping-an-aabb-through-multiple-objects': MultipleAABBSweptAABBExample
+    'circle-vs-point': CirclePointExample
+    'circle-vs-segment': CircleSegmentExample
+    'circle-vs-aabb': CircleAABBExample
+    'circle-vs-circle': CircleCircleExample
+    'circle-vs-swept-aabb': CircleSweptAABBExample
 
   examples = []
   for id, exampleConstructor of exampleIds

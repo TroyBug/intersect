@@ -44,6 +44,14 @@ Let's define a couple helpers that we'll use through the code.
     abs = (value) ->
       if value < 0 then -value else value
 
+    clamp = (value, min, max) ->
+      if value < min
+        min
+      else if value > max
+        max
+      else
+        value
+
     sign = (value) ->
       if value < 0 then -1 else 1
 
@@ -66,6 +74,9 @@ detection, so it makes things a bit more readable to formalize it as a class.
           invLength = 1.0 / length
           this.x *= invLength
           this.y *= invLength
+        else
+          this.x = 1
+          this.y = 0
         return length
 
 
@@ -132,8 +143,8 @@ Sweep tests return a `Sweep` object:
 - **sweep.hit** is a Hit object if there was a collision, or null if not.
 - **sweep.pos** is the furthest point the object reached along the swept path
   before it hit something.
-- **sweep.time** is a copy of `sweep.hit.time`, or 1 if the object didn't hit
-  anything during the sweep.
+- **sweep.time** is a copy of `sweep.hit.time`, offset by epsilon, or 1 if
+  the object didn't hit anything during the sweep.
 
 
 Axis-Aligned Bounding Boxes
@@ -167,7 +178,6 @@ axis with the smallest overlap and use that to create an intersection point
 on the edge of the box.
 
       intersectPoint: (point) ->
-
         dx = point.x - this.pos.x
         px = this.half.x - abs(dx)
         return null if px <= 0
@@ -267,15 +277,17 @@ the very starting of the line, so just set the hit time to zero.
         if nearTime <= 0
           hit.time = 0
         else
-          hit.time = nearTime - epsilon
-          if hit.time < 0
-            hit.time = 0
-        hit.normal.x = if nearTimeX > nearTimeY then -signX else 0
-        hit.normal.y = if nearTimeX > nearTimeY then 0 else -signY
+          hit.time = clamp(nearTime, 0, 1)
+        if nearTimeX > nearTimeY
+          hit.normal.x = -signX
+          hit.normal.y = 0
+        else
+          hit.normal.x = 0
+          hit.normal.y = -signY
         hit.delta.x = hit.time * delta.x
         hit.delta.y = hit.time * delta.y
-        hit.pos.x = pos.x + hit.delta.x
-        hit.pos.y = pos.y + hit.delta.y
+        hit.pos.x = pos.x + hit.time * delta.x
+        hit.pos.y = pos.y + hit.time * delta.y
         return hit
 
 
@@ -354,17 +366,22 @@ Otherwise, call into `intersectSegment` instead, where the segment is the center
 of the moving box, with the same delta. We pass the moving box's half size as
 padding. If we get a hit, we need to adjust the hit pos. Since a segment vs box
 test was used, the hit pos is the center of the box. This offsets it to the edge
-of the box, along the segment of movement.
+of the box, as close to the segment of movement as possible.
 
         else
           sweep.hit = this.intersectSegment(box.pos, delta, box.half.x, box.half.y)
           if sweep.hit?
-            sweep.pos = sweep.hit.pos.clone()
+            sweep.time = clamp(sweep.hit.time - epsilon, 0, 1)
+            sweep.pos.x = box.pos.x + delta.x * sweep.time
+            sweep.pos.y = box.pos.y + delta.y * sweep.time
             direction = delta.clone()
             direction.normalize()
-            sweep.hit.pos.x += direction.x * box.half.x
-            sweep.hit.pos.y += direction.y * box.half.y
-            sweep.time = sweep.hit.time
+            sweep.hit.pos.x = clamp(sweep.hit.pos.x + direction.x * box.half.x,
+                                    this.pos.x - this.half.x,
+                                    this.pos.x + this.half.x)
+            sweep.hit.pos.y = clamp(sweep.hit.pos.y + direction.y * box.half.y,
+                                    this.pos.y - this.half.y,
+                                    this.pos.y + this.half.y)
           else
             sweep.pos = new Point(box.pos.x + delta.x, box.pos.y + delta.y)
             sweep.time = 1
@@ -404,3 +421,232 @@ efficiently requires two steps:
 The first step is out of scope for this library, but these tests are great for
 solving the narrow phase. You can usually get away without a broad phase for
 simple games, however, if you aren't colliding against a huge number of objects.
+
+
+Bounding Circles
+----------------
+
+    root.Circle = class Circle
+      constructor: (pos, radius) ->
+        this.pos = pos
+        this.radius = radius
+
+
+### Circle vs Point
+
+      intersectPoint: (point, padding=0) ->
+        dx = point.x - this.pos.x
+        dy = point.y - this.pos.y
+        distanceSquared = dx * dx + dy * dy
+        minDistance = this.radius + padding
+        if distanceSquared >= (minDistance * minDistance)
+          return null
+        hit = new Hit(this)
+        hit.normal.x = dx
+        hit.normal.y = dy
+        hit.normal.normalize()
+        hit.pos.x = this.pos.x + hit.normal.x * this.radius
+        hit.pos.y = this.pos.y + hit.normal.y * this.radius
+        hit.delta.x = (hit.pos.x + hit.normal.x * padding) - point.x
+        hit.delta.y = (hit.pos.y + hit.normal.y * padding) - point.y
+        return hit
+
+
+### Circle vs Segment
+
+      intersectSegment: (pos, delta, padding=0) ->
+        mx = pos.x - this.pos.x
+        my = pos.y - this.pos.y
+        r = this.radius + padding
+        b = (mx * mx + my * my) - (r * r)
+        rx = delta.x
+        ry = delta.y
+        c = mx * rx + my * ry
+        rr = rx * rx + ry * ry
+        sigma = c * c - rr * b
+        if sigma < 0 or rr < 0
+          return null
+        time = -(c + Math.sqrt(sigma))
+        if time > rr
+          return null
+        time = clamp((time / rr), 0, 1)
+        hit = new Hit(this)
+        hit.normal.x = mx + time * rx
+        hit.normal.y = my + time * ry
+        hit.normal.normalize()
+        hit.pos.x = pos.x + time * delta.x
+        hit.pos.y = pos.y + time * delta.y
+        hit.time = time
+        return hit
+
+
+### Circle vs AABB
+
+      intersectAABB: (box) ->
+        dx = clamp(this.pos.x, box.pos.x - box.half.x, box.pos.x + box.half.x)
+        dy = clamp(this.pos.y, box.pos.y - box.half.y, box.pos.y + box.half.y)
+        dx -= this.pos.x
+        dy -= this.pos.y
+        distanceSquared = dx * dx + dy * dy
+        if distanceSquared >= this.radius * this.radius
+          return null
+        hit = new Hit(this)
+        hit.normal.x = box.pos.x - this.pos.x
+        hit.normal.y = box.pos.y - this.pos.y
+        hit.normal.normalize()
+        hit.pos.x = this.pos.x + (hit.normal.x * this.radius)
+        hit.pos.y = this.pos.y + (hit.normal.y * this.radius)
+        if abs(hit.normal.x) > abs(hit.normal.y)
+          px = box.half.x * sign(hit.normal.x)
+          py = px * (hit.normal.y) / hit.normal.x
+        else
+          py = box.half.y * sign(hit.normal.y)
+          px = (py * hit.normal.x) / hit.normal.y
+        hit.delta.x = (hit.pos.x + px) - box.pos.x
+        hit.delta.y = (hit.pos.y + py) - box.pos.y
+        return hit
+
+
+### Circle vs Circle
+
+      intersectCircle: (circle) ->
+        return this.intersectPoint(circle.pos, circle.radius)
+
+
+### Circle vs Swept AABB
+
+      sweepAABB: (box, delta) ->
+        inverseDelta = new Point(-delta.x, -delta.y)
+        sweep = box.sweepCircle(this, inverseDelta)
+        if sweep.hit?
+          sweep.time = sweep.hit.time
+          sweep.pos.x = box.pos.x + delta.x * sweep.time
+          sweep.pos.y = box.pos.y + delta.y * sweep.time
+          sweep.hit.collider = this
+        else
+          sweep.pos.x = box.pos.x + delta.x
+          sweep.pos.y = box.pos.y + delta.y
+        return sweep
+
+      sweepCircle = (circle, delta) ->
+        hit = this.intersectSegment(circle.pos, delta, circle.radius, circle.radius)
+        u = 0
+        v = 0
+        if hit.pos.x < this.pos.x - this.half.x
+          u |= 1
+        else if hit.pos.x > this.pos.x + this.half.x
+          v |= 1
+        if hit.pos.y < this.pos.y - this.half.y
+          u |= 2
+        else if hit.pos.y > this.pos.y + this.half.y
+          v |= 2
+        m = u + v
+        if m == 3
+          # Voronoi vertex region
+          # FIXME: the hit and normals here aren't exactly right
+          capsule = new Capsule()
+          capsule.setFromEdge(this, v, v ^ 1, circle.radius)
+          horizontalEdgeHit = capsule.intersectSegment(circle.pos, delta)
+          if horizontalEdgeHit?
+            intersected = true
+            sweep.hit.normal.x = 0
+            sweep.hit.normal.y = if v & 2 == 0 then -1 else 1
+          capsule.setFromEdge(this, v, v ^ 2, circle.radius)
+          verticalEdgeHit = capsule.intersectSegment(circle.pos, delta)
+          if verticalEdgeHit?
+            intersected = true
+            sweep.hit.normal.x = if v & 1 == 0 then -1 else 1
+            sweep.hit.normal.y = 0
+        else if m & (m - 1) == 0
+          # Voronoi face region (within the AABB)
+          intersected = true
+        else
+          # Voronoi edge region
+          capsule = new Capsule()
+          capsule.setFromEdge(this, u ^ 3, v, circle.radius)
+          hit = capsule.intersectSegment(circle.pos, delta)
+
+
+
+      var intersected:Bool = false;
+      _tmpSweep.copy(sweep);
+      if (intersectSegmentAABB(_tmpSweep, aabb, circle.radius, circle.radius)) {
+         var m:Int = u + v;
+         if (m == 3) {
+            // Voronoi vertex region
+            // FIXME: the hit and normals here aren't exactly right
+            _tmpCapsule.setFromEdge(aabb, v, v ^ 1, circle.radius);
+            if (intersectSegmentCapsule(sweep, _tmpCapsule)) {
+               // Hit a horizontal edge
+               intersected = true;
+               sweep.hit.normalX = 0;
+               sweep.hit.normalY = v & 2 == 0 ? -1 : 1;
+            }
+            _tmpCapsule.setFromEdge(aabb, v, v ^ 2, circle.radius);
+            if (intersectSegmentCapsule(sweep, _tmpCapsule)) {
+               // Hit a vertical edge
+               intersected = true;
+               sweep.hit.normalX = v & 1 == 0 ? -1 : 1;
+               sweep.hit.normalY = 0;
+            }
+         } else if (m & (m - 1) == 0) {
+            // Voronoi face region (within the AABB)
+            intersected = true;
+            sweep.copy(_tmpSweep);
+         } else {
+            // Voronoi edge region
+            _tmpCapsule.setFromEdge(aabb, u ^ 3, v, circle.radius);
+            intersected = intersectSegmentCapsule(sweep, _tmpCapsule);
+         }
+      }
+      if (intersected) {
+         sweep.x = sweep.hit.x;
+         sweep.y = sweep.hit.y;
+         sweep.hit.x -= sweep.hit.normalX * circle.radius;
+         sweep.hit.y -= sweep.hit.normalY * circle.radius;
+         sweep.hit.bounds = aabb;
+         sweep.hit.entity = aabb.entity;
+      }
+      return intersected;
+
+
+
+
+
+
+#      if (_tmpSweep2.hit != null) {
+#         _tmpSweep2.hit.free();
+#         _tmpSweep2.hit = null;
+#      }
+#      // Create a sweep that moves the circle and treats the AABB as stationary
+#      var cx = circle.entity.x + circle.x;
+#      var cy = circle.entity.y + circle.y;
+#      _tmpSweep2.segment.set(
+#         cx, cy, cx - sweep.segment.deltaX, cy - sweep.segment.deltaY);
+#      _tmpSweep2.mask = sweep.mask;
+#      _tmpSweep2.time = sweep.time;
+#      if (sweepCircleAABB(_tmpSweep2, circle, aabb)) {
+#         // It collided, so transform the temporary sweep results
+#         // back into the AABB's movement space
+#         sweep.time = _tmpSweep2.time;
+#         sweep.x = sweep.segment.x1 + sweep.time * sweep.segment.deltaX;
+#         sweep.y = sweep.segment.y1 + sweep.time * sweep.segment.deltaY;
+#         var hit = sweep.hit;
+#         if (hit == null) {
+#            hit = sweep.hit = CollisionHit.create();
+#         }
+#         hit.bounds = circle;
+#         hit.entity = circle.entity;
+#         hit.normalX = sweep.x - cx;
+#         hit.normalY = sweep.y - cy;
+#         hit.normalize();
+#         hit.x = cx + hit.normalX * circle.radius;
+#         hit.y = cy + hit.normalY * circle.radius;
+#         return true;
+#      } else {
+#         return false;
+#      }
+
+### Circle vs Swept Circle
+
+      sweepCircle: (circle, delta) ->
